@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "../lib/EscrowTypes.sol"
+import "../lib/EscrowTypes.sol";
 
 /**
  * @title ICryplioEscrow
  * @dev Interface for core escrow functionality
  */
 
- interface ICryplioEscrow {
+interface ICryplioEscrow {
     // Events
     event EscrowCreated(
         bytes32 indexed tradeId,
@@ -56,7 +56,7 @@ import "../lib/EscrowTypes.sol"
         address token,
         uint256 amount,
         uint256 expiresAt,
-        EscrowTypes.EscrowStatus status,
+        EscrowTypes.EscrowStatus status
     );
 
     function escrowExists(bytes32 tradeId) external view returns (bool);

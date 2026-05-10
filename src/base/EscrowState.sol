@@ -4,20 +4,44 @@ import "../lib/EscrowTypes.sol";
 
 /**
  * @title EscrowState
- * @dev Base contract containing all state variables and storage 
- * for escrow functionality
+ * @dev Base contract containing all state variables and storage
+ * @notice This contract is inherited by EscrowAuth and EscrowViews
+ * @custom:security authorizedSigner mapping controls admin access
  */
 abstract contract EscrowState {
     using EscrowTypes for EscrowTypes.Escrow;
 
-    // State Variable
-    mapping (bytes32 => EscrowTypes.Escrow) escrows;
-    mapping (address => bool) authorizedSigner;
+    // State Variables
+    /// @notice Mapping of tradeId to Escrow struct
+    /// @dev SECURITY: tradeId must be unique - enforced in createEscrow
+    mapping(bytes32 => EscrowTypes.Escrow) escrows;
+    
 
-    // Token management
+    /// @notice Mapping of addresses authorized to call admin functions
+    /// @dev SECURITY: Only owner can modify via addAuthorizedSigner/removeAuthorizedSigner
+    mapping(address => bool) authorizedSigner;
+
+
+    /// @notice Mapping of supported ERC20 tokens
+    /// @dev SECURITY: Only tokens in this mapping can be used for escrow
     mapping(address => bool) public supportedTokens;
 
-    // Constructor
+
+    /// @notice Address receiving platform fees (treasury wallet)
+    /// @dev FINANCIAL: Must be set before fees can be collected
+    address public feeRecipient;
+
+    
+    /// @notice Platform fee in basis points
+    /// @dev MATH: 75 BPS = 0.75% = (amount * 75) / 10000
+    ///      Example: 100 USDT * 75 / 10000 = 0.75 USDT fee
+    ///      SECURITY: Constant cannot be changed after deployment
+    uint256 public constant FEE_BPS = 75;
+    
+
+    /// @notice Contract constructor - initializes supported tokens
+    /// @dev SECURITY: Requires at least one token to be supported
+    /// @param _initialTokens Array of ERC20 token addresses to support initially
     constructor(address[] memory _initialTokens) {
         require(_initialTokens.length > 0, "Initial tokens required");
         for (uint256 i = 0; i < _initialTokens.length; i++) {
@@ -29,20 +53,36 @@ abstract contract EscrowState {
         }
     }
 
-    // Authorized signer management
+    /// @notice Add an address to authorized signers list
+    /// @dev SECURITY: Internal function - only callable by owner via addAuthorizedSigner
+    /// @param signer Address to authorize
     function _addAuthorizedSigner(address signer) internal {
         authorizedSigner[signer] = true;
     }
 
+    /// @notice Remove an address from authorized signers list
+    /// @dev SECURITY: Internal function - only callable by owner via removeAuthorizedSigner
+    /// @param signer Address to remove authorization
     function _removeAuthorizedSigner(address signer) internal {
         authorizedSigner[signer] = false;
     }
 
+    /// @notice Check if an address is authorized
+    /// @dev SECURITY: Used by onlyAuthorized modifier
+    /// @param signer Address to check
+    /// @return bool True if authorized
     function _isAuthorized(address signer) internal view returns (bool) {
         return authorizedSigner[signer];
     }
 
     // Internal state management functions
+    /// @notice Create a new escrow record in storage
+    /// @dev Sets expiry time based on ESCROW_EXPIRY_TIME constant
+    /// @param tradeId Unique trade identifier
+    /// @param buyer Address receiving tokens
+    /// @param seller Address providing tokens
+    /// @param token ERC20 token address
+    /// @param amount Token amount to lock
     function _createEscrow(
         bytes32 tradeId,
         address buyer,
@@ -61,10 +101,18 @@ abstract contract EscrowState {
         });
     }
 
+    /// @notice Update escrow status
+    /// @dev SECURITY: Only callable internally after validation
+    /// @param tradeId Trade identifier
+    /// @param newStatus New status to set
     function _updateEscrowStatus(bytes32 tradeId, EscrowTypes.EscrowStatus newStatus) internal {
         escrows[tradeId].status = newStatus;
     }
 
+    /// @notice Get escrow storage reference
+    /// @dev SECURITY: Reverts if escrow not found
+    /// @param tradeId Trade identifier
+    /// @return Escrow storage reference
     function _getEscrow(bytes32 tradeId) internal view returns (EscrowTypes.Escrow storage) {
         if (escrows[tradeId].buyer == address(0)) {
             revert EscrowTypes.EscrowNotFound();
@@ -72,6 +120,10 @@ abstract contract EscrowState {
         return escrows[tradeId];
     }
 
+    /// @notice Check if escrow exists
+    /// @dev SECURITY: Uses buyer address as existence check (buyer != address(0))
+    /// @param tradeId Trade identifier
+    /// @return bool True if escrow exists
     function _escrowExists(bytes32 tradeId) internal view returns (bool) {
         return escrows[tradeId].buyer != address(0);
     }

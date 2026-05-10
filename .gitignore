@@ -1,7 +1,6 @@
 # Compiler files
 cache/
 out/
-lib/
 
 # Commonly ignored directories
 .logs/

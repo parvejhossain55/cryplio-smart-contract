@@ -58,7 +58,6 @@ library EscrowTypes {
     error InvalidTradeId();
     error InvalidAddresses();
     error InvalidAmount();
-    error TransferFailed();
     error InvalidStatus();
     error Unauthorized();
     error UnsupportedToken();
