@@ -48,8 +48,12 @@ library EscrowTypes {
         Released,
         Refunded
     }
-
+    
+    // Constants
+    uint256 public constant ESCROW_EXPIRY_TIME = 1 hours; // 1 hours for payment
+    
     // Errors
+    error EscrowNotFound();
     error EscrowAlreadyExists();
     error InvalidTradeId();
     error InvalidAddresses();
@@ -57,7 +61,10 @@ library EscrowTypes {
     error TransferFailed();
     error InvalidStatus();
     error Unauthorized();
+    error UnsupportedToken();
     error CannotRefund();
+    error NotAuthorizedSigner();
+    error EscrowExpired();
 
     // Validation functions
     function validateTradeId(bytes32 tradeId) internal pure {
