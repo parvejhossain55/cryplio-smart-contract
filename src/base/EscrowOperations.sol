@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -15,58 +15,7 @@ import "../lib/EscrowTypes.sol";
  */
 abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
     using SafeERC20 for IERC20;
-
-    // Events
-    /// @notice Emitted when escrow is created and tokens locked
-    /// @dev Used for tracking all escrow creation events off-chain
-    event EscrowCreated(
-        bytes32 indexed tradeId,
-        address indexed buyer,
-        address indexed seller,
-        address token,
-        uint256 amount,
-        uint256 timestamp
-    );
     
-    /// @notice Emitted when seller releases funds to buyer after confirming payment
-    /// @dev Amount emitted is after fee deduction
-    event EscrowReleased(
-        bytes32 indexed tradeId,
-        address indexed seller,
-        uint256 amount,
-        uint256 timestamp
-    );
-    
-    /// @notice Emitted when admin refunds escrow to seller
-    /// @dev No fee is deducted on refunds - full amount returned
-    event EscrowRefunded(
-        bytes32 indexed tradeId,
-        address indexed buyer,
-        uint256 amount,
-        uint256 timestamp
-    );
-    
-    /// @notice Emitted when platform fee is collected
-    /// @dev Fee = (amount * FEE_BPS) / 10000 where FEE_BPS = 75 (0.75%)
-    event FeeCollected(
-        bytes32 indexed tradeId,
-        address indexed token,
-        address feeRecipient,
-        uint256 feeAmount,
-        uint256 timestamp
-    );
-
-    /// @notice Emitted when admin force releases escrow to buyer (dispute resolution)
-    /// @dev releasedBy tracks which admin performed the action for audit trail
-    event EscrowForceReleased(
-        bytes32 indexed tradeId,
-        address indexed buyer,
-        uint256 amount,
-        address indexed releasedBy,
-        uint256 timestamp
-    );
-    
-
     // Constructor
     constructor(address[] memory _initialTokens) EscrowAuth(_initialTokens) {}
     
@@ -80,21 +29,25 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
      * @param seller Address providing tokens (must approve contract first)
      * @param token ERC20 token address (must be in supportedTokens)
      * @param amount Token amount to lock (must be > 0)
+     * @param expiryTime Custom expiry time for this escrow (optional, defaults to 1 hour)
      * @return bool Always returns true on success
      * @custom:throws EscrowTypes.UnsupportedToken if token not supported
      * @custom:throws EscrowTypes.EscrowAlreadyExists if tradeId already used
+     * @custom:throws EscrowTypes.InvalidExpiryTime if expiryTime out of bounds
      */
     function createEscrow(
         bytes32 tradeId,
         address buyer,
         address seller,
         address token,
-        uint256 amount
+        uint256 amount,
+        uint256 expiryTime
     ) external nonReentrant returns (bool) {
         // Validate inputs
         EscrowTypes.validateTradeId(tradeId);
         EscrowTypes.validateAddresses(buyer, seller);
         EscrowTypes.validateAmount(amount);
+        EscrowTypes.validateExpiryTime(expiryTime);
         
         // Validate token support
         if (!supportedTokens[token]) {
@@ -106,17 +59,22 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
             revert EscrowTypes.EscrowAlreadyExists();
         }
         
+        // Only seller can create their own escrow
+        if (msg.sender != seller) {
+            revert EscrowTypes.Unauthorized();
+        }
+        
         // Transfer tokens from seller to this contract
         IERC20 tokenContract = IERC20(token);
         tokenContract.safeTransferFrom(seller, address(this), amount);
         
         // Create escrow record
-        _createEscrow(tradeId, buyer, seller, token, amount);
+        _createEscrow(tradeId, buyer, seller, token, amount, expiryTime);
         
-        emit EscrowCreated(tradeId, buyer, seller, token, amount, block.timestamp);
+        emit EscrowTypes.EscrowCreated(tradeId, buyer, seller, token, amount, block.timestamp);
         return true;
     }
-    
+
     /**
      * @notice Release escrow funds to buyer after seller confirms fiat payment
      * @dev FINANCIAL: Deducts 0.75% platform fee before transfer
@@ -150,7 +108,7 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
         // Transfer fee to feeRecipient
         if (feeAmount > 0 && feeRecipient != address(0)) {
             IERC20(escrow.token).safeTransfer(feeRecipient, feeAmount);
-            emit FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
+            emit EscrowTypes.FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
         }
         
         // Transfer remaining to buyer
@@ -159,13 +117,14 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
         // Update status
         _updateEscrowStatus(tradeId, EscrowTypes.EscrowStatus.Released);
         
-        emit EscrowReleased(tradeId, escrow.buyer, buyerAmount, block.timestamp);
+        emit EscrowTypes.EscrowReleased(tradeId, escrow.buyer, buyerAmount, block.timestamp);
         return true;
     }
 
     /**
      * @notice Refund escrow funds to seller (admin only)
-     * @dev FINANCIAL: Full refund - NO fee deducted on refunds
+     * @dev FINANCIAL: Deducts 0.25% platform fee (lower than release fee to be fair)
+     *      MATH: feeAmount = (amount * REFUND_FEE_BPS) / 10000, sellerAmount = amount - feeAmount
      *      ACCESS: Only callable by authorized signers (admin)
      *      REENTRANCY: Protected by nonReentrant modifier
      *      SECURITY: Requires escrow to be refundable (expired or dispute resolved)
@@ -173,6 +132,7 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
      * @return bool Always returns true on success
      * @custom:throws EscrowTypes.CannotRefund if escrow not refundable
      * @custom:throws EscrowTypes.Unauthorized if caller not authorized
+     * @custom:throws EscrowTypes.InvalidStatus if escrow not in Locked state
      */
     function refundEscrow(bytes32 tradeId)
         external
@@ -184,13 +144,29 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
     {
         EscrowTypes.Escrow storage escrow = _getEscrow(tradeId);
         
-        // Transfer funds to seller
-        IERC20(escrow.token).safeTransfer(escrow.seller, escrow.amount);
+        // Ensure escrow is still in Locked status
+        if (escrow.status != EscrowTypes.EscrowStatus.Locked) {
+            revert EscrowTypes.InvalidStatus();
+        }
+        
+        // MATH: Fee calculation - (amount * 25) / 10000 = 0.25%
+        // Example: 100 USDT * 25 / 10000 = 0.25 USDT fee
+        uint256 feeAmount = (escrow.amount * REFUND_FEE_BPS) / 10000;
+        uint256 sellerAmount = escrow.amount - feeAmount;
+        
+        // Transfer fee to feeRecipient
+        if (feeAmount > 0 && feeRecipient != address(0)) {
+            IERC20(escrow.token).safeTransfer(feeRecipient, feeAmount);
+            emit EscrowTypes.FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
+        }
+        
+        // Transfer remaining to seller
+        IERC20(escrow.token).safeTransfer(escrow.seller, sellerAmount);
         
         // Update status
         _updateEscrowStatus(tradeId, EscrowTypes.EscrowStatus.Refunded);
         
-        emit EscrowRefunded(tradeId, escrow.seller, escrow.amount, block.timestamp);
+        emit EscrowTypes.EscrowRefunded(tradeId, escrow.seller, sellerAmount, block.timestamp);
         return true;
     }
 
@@ -228,7 +204,7 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
         // Transfer fee to feeRecipient
         if (feeAmount > 0 && feeRecipient != address(0)) {
             IERC20(escrow.token).safeTransfer(feeRecipient, feeAmount);
-            emit FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
+            emit EscrowTypes.FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
         }
 
         // Transfer remaining to buyer
@@ -237,7 +213,7 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
         // Update status
         _updateEscrowStatus(tradeId, EscrowTypes.EscrowStatus.Released);
 
-        emit EscrowForceReleased(tradeId, escrow.buyer, buyerAmount, msg.sender, block.timestamp);
+        emit EscrowTypes.EscrowForceReleased(tradeId, escrow.buyer, buyerAmount, msg.sender, block.timestamp);
         return true;
     }
 }

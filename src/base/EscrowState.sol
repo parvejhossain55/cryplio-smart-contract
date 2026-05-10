@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity ^0.8.24;
 import "../lib/EscrowTypes.sol";
 
 /**
@@ -32,17 +32,34 @@ abstract contract EscrowState {
     address public feeRecipient;
 
     
+    /// @notice Maximum fee cap to protect users (5% max)
+    /// @dev SECURITY: Prevents exorbitant fees even if constants are modified
+    uint256 public constant MAX_FEE_BPS = 500; // 5% maximum fee
+    
     /// @notice Platform fee in basis points
     /// @dev MATH: 75 BPS = 0.75% = (amount * 75) / 10000
     ///      Example: 100 USDT * 75 / 10000 = 0.75 USDT fee
     ///      SECURITY: Constant cannot be changed after deployment
+    ///      SAFETY: Must be <= MAX_FEE_BPS (enforced at compile time)
     uint256 public constant FEE_BPS = 75;
+    
+    /// @notice Refund fee in basis points (lower than release fee)
+    /// @dev MATH: 25 BPS = 0.25% = (amount * 25) / 10000
+    ///      Example: 100 USDT * 25 / 10000 = 0.25 USDT fee
+    ///      RATIONALE: Lower fee on refunds to be fair to users while preventing abuse
+    ///      SECURITY: Constant cannot be changed after deployment
+    ///      SAFETY: Must be <= MAX_FEE_BPS (enforced at compile time)
+    uint256 public constant REFUND_FEE_BPS = 25;
     
 
     /// @notice Contract constructor - initializes supported tokens
     /// @dev SECURITY: Requires at least one token to be supported
     /// @param _initialTokens Array of ERC20 token addresses to support initially
     constructor(address[] memory _initialTokens) {
+        // Validate fee caps at deployment
+        require(FEE_BPS <= MAX_FEE_BPS, "Fee exceeds maximum cap");
+        require(REFUND_FEE_BPS <= MAX_FEE_BPS, "Refund fee exceeds maximum cap");
+        
         require(_initialTokens.length > 0, "Initial tokens required");
         for (uint256 i = 0; i < _initialTokens.length; i++) {
             address token = _initialTokens[i];
@@ -77,7 +94,7 @@ abstract contract EscrowState {
 
     // Internal state management functions
     /// @notice Create a new escrow record in storage
-    /// @dev Sets expiry time based on ESCROW_EXPIRY_TIME constant
+    /// @dev Sets expiry time based on provided expiryTime parameter
     /// @param tradeId Unique trade identifier
     /// @param buyer Address receiving tokens
     /// @param seller Address providing tokens
@@ -88,7 +105,8 @@ abstract contract EscrowState {
         address buyer,
         address seller,
         address token,
-        uint256 amount
+        uint256 amount,
+        uint256 expiryTime
     ) internal {
         escrows[tradeId] = EscrowTypes.Escrow({
             tradeId: tradeId,
@@ -96,7 +114,7 @@ abstract contract EscrowState {
             seller: seller,
             token: token,
             amount: amount,
-            expiresAt: block.timestamp + EscrowTypes.ESCROW_EXPIRY_TIME,
+            expiresAt: block.timestamp + expiryTime,
             status: EscrowTypes.EscrowStatus.Locked
         });
     }

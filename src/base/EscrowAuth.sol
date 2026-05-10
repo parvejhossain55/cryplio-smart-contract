@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./EscrowState.sol";
@@ -61,7 +61,9 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     /// @dev ACCESS: Only owner can call. Grants admin privileges for refund/force release.
     /// @param signer Address to authorize as admin
     function addAuthorizedSigner(address signer) external onlyOwner {
+        require(signer != address(0), "Invalid signer");
         _addAuthorizedSigner(signer);
+        emit EscrowTypes.AuthorizedSignerAdded(signer, msg.sender);
     }
     
     /// @notice Remove an address from authorized signers list
@@ -69,11 +71,8 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     /// @param signer Address to remove authorization from
     function removeAuthorizedSigner(address signer) external onlyOwner {
         _removeAuthorizedSigner(signer);
+        emit EscrowTypes.AuthorizedSignerRemoved(signer, msg.sender);
     }
-
-    // Fee recipient management
-    /// @notice Emitted when fee recipient (treasury wallet) is updated
-    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
 
     /// @notice Set the fee recipient address (treasury wallet)
     /// @dev FINANCIAL: All platform fees will be sent to this address
@@ -82,8 +81,28 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     /// @param _feeRecipient New fee recipient address
     function setFeeRecipient(address _feeRecipient) external onlyOwner {
         require(_feeRecipient != address(0), "Invalid fee recipient");
-        emit FeeRecipientUpdated(feeRecipient, _feeRecipient);
+        emit EscrowTypes.FeeRecipientUpdated(feeRecipient, _feeRecipient);
         feeRecipient = _feeRecipient;
+    }
+
+    // Token management functions
+    /// @notice Add a token to the supported tokens list
+    /// @dev ACCESS: Only owner can call
+    /// @param token Token address to add
+    function addSupportedToken(address token) external onlyOwner {
+        require(token != address(0), "Invalid token address");
+        require(!supportedTokens[token], "Token already supported");
+        supportedTokens[token] = true;
+        emit EscrowTypes.TokenSupportedAdded(token);
+    }
+
+    /// @notice Remove a token from the supported tokens list
+    /// @dev ACCESS: Only owner can call
+    /// @param token Token address to remove
+    function removeSupportedToken(address token) external onlyOwner {
+        require(supportedTokens[token], "Token not supported");
+        supportedTokens[token] = false;
+        emit EscrowTypes.TokenSupportedRemoved(token);
     }
 
     /// @notice Check if an address is authorized as admin
