@@ -1,9 +1,9 @@
 # Cryplio Smart Contract
 
-A secure, non-custodial P2P escrow system for ERC20 tokens.
+A secure, non-custodial P2P escrow system specialized for stablecoins (USDT, USDC, DAI).
 
 ## 1. Overview
-Cryplio Escrow facilitates trustless trades between buyers and sellers. It locks seller funds in a smart contract and releases them only after payment confirmation or through an authorized dispute resolution process.
+Cryplio Escrow facilitates trustless trades between buyers and sellers using stablecoins. It locks seller funds in a smart contract and releases them only after payment confirmation or through an authorized dispute resolution process. By focusing exclusively on stablecoins, the platform ensures that trade values remain stable during the escrow period.
 
 ## 2. Key Features
 - **Non-Custodial**: Users maintain control over their funds through the smart contract.

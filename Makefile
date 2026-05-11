@@ -1,9 +1,13 @@
-.PHONY: build test clean anvil deploy help
+.PHONY: build test clean anvil deploy deploy-usdt help
 
-# Config (override with: make deploy SCRIPT=path/to/Script.s.sol PRIVATE_KEY=0x...)
+# Load .env file
+ifneq ("$(wildcard .env)","")
+    include .env
+    export
+endif
+
+# Defaults
 RPC_URL ?= http://localhost:8545
-SCRIPT ?= script/Counter.s.sol
-PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 help: ## Show all available commands
 	@echo "Available commands:"
@@ -21,8 +25,14 @@ clean: ## Remove build artifacts
 anvil: ## Start local Anvil test node
 	anvil
 
-deploy: ## Deploy script (requires anvil running). Usage: make deploy [SCRIPT=path] [PRIVATE_KEY=0x...] [RPC_URL=http://...]
-	forge script $(SCRIPT) --rpc-url $(RPC_URL) --broadcast --private-key $(PRIVATE_KEY)
+deploy: ## Deploy CryplioEscrow (uses .env variables)
+	forge script script/Deploy.s.sol:DeployCryplioEscrow --rpc-url $(RPC_URL) --broadcast --private-key $(PRIVATE_KEY)
+
+deploy-usdt: ## Deploy Mock USDT for local testing
+	forge script script/DeployMockUSDT.s.sol:DeployMockUSDT --rpc-url $(RPC_URL) --broadcast --private-key $(PRIVATE_KEY)
+
+deploy-sepolia: ## Deploy to Sepolia and verify
+	forge script script/Deploy.s.sol:DeployCryplioEscrow --rpc-url $(SEPOLIA_RPC_URL) --broadcast --verify --private-key $(PRIVATE_KEY)
 
 fmt: ## Format code
 	forge fmt
@@ -32,3 +42,6 @@ snapshot: ## Create gas snapshot
 
 coverage: ## Run test coverage
 	forge coverage
+
+balance: ## Check ETH balance of the deployer
+	@cast balance $(shell cast wallet address --private-key $(PRIVATE_KEY)) --rpc-url $(RPC_URL) --ether

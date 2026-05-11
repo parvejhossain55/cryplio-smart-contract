@@ -89,7 +89,8 @@ abstract contract EscrowAuth is ICryplioEscrow, EscrowState, Ownable, Pausable {
 
     // Token management functions
     /// @notice Add a token to the supported tokens list
-    /// @dev ACCESS: Only owner can call
+    /// @dev ACCESS: Only owner can call. 
+    ///      POLICY: Only verified stablecoins (e.g. USDT, USDC, DAI) should be added.
     /// @param token Token address to add
     function addSupportedToken(address token) external virtual override onlyOwner {
         require(token != address(0), "Invalid token address");

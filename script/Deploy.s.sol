@@ -12,7 +12,7 @@ contract DeployCryplioEscrow is Script {
         // Initial supported tokens (e.g. USDT, USDC on local/testnet)
         // For production, these should be set in .env or passed as args
         address[] memory initialTokens = new address[](1);
-        initialTokens[0] = vm.envAddress("INITIAL_TOKEN_ADDRESS");
+        initialTokens[0] = vm.envAddress("USDT_ADDRESS");
 
         vm.startBroadcast(deployerPrivateKey);
 
