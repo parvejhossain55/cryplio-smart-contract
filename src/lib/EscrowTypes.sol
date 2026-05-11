@@ -19,7 +19,7 @@ library EscrowTypes {
 
     event EscrowReleased(
         bytes32 indexed tradeId,
-        address indexed seller,
+        address indexed buyer,
         uint256 amount,
         uint256 timestamp
     );
@@ -61,7 +61,7 @@ library EscrowTypes {
         address seller;
         address token;
         uint256 amount;
-        uint256 expiresAt;
+        uint48 expiresAt;
         EscrowStatus status;
     }
 
@@ -91,6 +91,8 @@ library EscrowTypes {
     error EscrowExpired();
     error InvalidSigner();
     error InvalidExpiryTime();
+    error InvalidSignature();
+    error NonceAlreadyUsed();
 
     // Validation functions
     function validateTradeId(bytes32 tradeId) internal pure {
@@ -117,6 +119,18 @@ library EscrowTypes {
     function validateExpiryTime(uint256 expiryTime) internal pure {
         if (expiryTime < MIN_EXPIRY_TIME || expiryTime > MAX_EXPIRY_TIME) {
             revert InvalidExpiryTime();
+        }
+    }
+
+    function validateEscrowExists(bool exists) internal pure {
+        if (exists) {
+            revert EscrowAlreadyExists();
+        }
+    }
+
+    function validateTokenSupported(bool supported) internal pure {
+        if (!supported) {
+            revert UnsupportedToken();
         }
     }
 

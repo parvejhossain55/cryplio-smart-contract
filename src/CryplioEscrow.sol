@@ -8,7 +8,7 @@ import "./base/EscrowViews.sol";
  * @title CryplioEscrow
  * @dev Main escrow contract combining operations and views
  */
-contract CryplioEscrow is EscrowOperations, EscrowViews {
+contract CryplioEscrow is ICryplioEscrow, EscrowOperations, EscrowViews {
     // Events are inherited from EscrowOperations
 
     constructor(address[] memory _initialTokens)

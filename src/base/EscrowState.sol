@@ -60,13 +60,16 @@ abstract contract EscrowState {
         require(FEE_BPS <= MAX_FEE_BPS, "Fee exceeds maximum cap");
         require(REFUND_FEE_BPS <= MAX_FEE_BPS, "Refund fee exceeds maximum cap");
         
-        require(_initialTokens.length > 0, "Initial tokens required");
-        for (uint256 i = 0; i < _initialTokens.length; i++) {
+        uint256 len = _initialTokens.length;
+        require(len > 0, "Initial tokens required");
+        for (uint256 i = 0; i < len; ) {
             address token = _initialTokens[i];
+            
             require(token != address(0), "Invalid token address");
             if (!supportedTokens[token]) {
                 supportedTokens[token] = true;
             }
+            unchecked { ++i; }
         }
     }
 
@@ -114,7 +117,7 @@ abstract contract EscrowState {
             seller: seller,
             token: token,
             amount: amount,
-            expiresAt: block.timestamp + expiryTime,
+            expiresAt: uint48(block.timestamp + expiryTime),
             status: EscrowTypes.EscrowStatus.Locked
         });
     }
@@ -132,10 +135,11 @@ abstract contract EscrowState {
     /// @param tradeId Trade identifier
     /// @return Escrow storage reference
     function _getEscrow(bytes32 tradeId) internal view returns (EscrowTypes.Escrow storage) {
-        if (escrows[tradeId].buyer == address(0)) {
+        EscrowTypes.Escrow storage escrow = escrows[tradeId];
+        if (escrow.buyer == address(0)) {
             revert EscrowTypes.EscrowNotFound();
         }
-        return escrows[tradeId];
+        return escrow;
     }
 
     /// @notice Check if escrow exists

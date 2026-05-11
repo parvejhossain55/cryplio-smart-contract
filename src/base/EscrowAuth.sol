@@ -2,8 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./EscrowState.sol";
 import "../lib/EscrowTypes.sol";
+import "../interface/ICrpylioEscrow.sol";
 
 /**
  * @title EscrowAuth
@@ -11,7 +13,7 @@ import "../lib/EscrowTypes.sol";
  * @notice Handles all access control for the escrow system
  * @custom:security Owner controls authorized signers and fee recipient
  */
-abstract contract EscrowAuth is EscrowState, Ownable {
+abstract contract EscrowAuth is ICryplioEscrow, EscrowState, Ownable, Pausable {
       // Modifiers
     /// @notice Restricts access to authorized admin signers only
     /// @dev Used for refund and force release functions
@@ -60,7 +62,7 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     /// @notice Add an address to authorized signers list
     /// @dev ACCESS: Only owner can call. Grants admin privileges for refund/force release.
     /// @param signer Address to authorize as admin
-    function addAuthorizedSigner(address signer) external onlyOwner {
+    function addAuthorizedSigner(address signer) external virtual override onlyOwner {
         require(signer != address(0), "Invalid signer");
         _addAuthorizedSigner(signer);
         emit EscrowTypes.AuthorizedSignerAdded(signer, msg.sender);
@@ -69,7 +71,7 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     /// @notice Remove an address from authorized signers list
     /// @dev ACCESS: Only owner can call. Revokes admin privileges.
     /// @param signer Address to remove authorization from
-    function removeAuthorizedSigner(address signer) external onlyOwner {
+    function removeAuthorizedSigner(address signer) external virtual override onlyOwner {
         _removeAuthorizedSigner(signer);
         emit EscrowTypes.AuthorizedSignerRemoved(signer, msg.sender);
     }
@@ -79,7 +81,7 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     ///      ACCESS: Only owner can call
     ///      SECURITY: Cannot be set to zero address
     /// @param _feeRecipient New fee recipient address
-    function setFeeRecipient(address _feeRecipient) external onlyOwner {
+    function setFeeRecipient(address _feeRecipient) external virtual override onlyOwner {
         require(_feeRecipient != address(0), "Invalid fee recipient");
         emit EscrowTypes.FeeRecipientUpdated(feeRecipient, _feeRecipient);
         feeRecipient = _feeRecipient;
@@ -89,7 +91,7 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     /// @notice Add a token to the supported tokens list
     /// @dev ACCESS: Only owner can call
     /// @param token Token address to add
-    function addSupportedToken(address token) external onlyOwner {
+    function addSupportedToken(address token) external virtual override onlyOwner {
         require(token != address(0), "Invalid token address");
         require(!supportedTokens[token], "Token already supported");
         supportedTokens[token] = true;
@@ -99,17 +101,29 @@ abstract contract EscrowAuth is EscrowState, Ownable {
     /// @notice Remove a token from the supported tokens list
     /// @dev ACCESS: Only owner can call
     /// @param token Token address to remove
-    function removeSupportedToken(address token) external onlyOwner {
+    function removeSupportedToken(address token) external virtual override onlyOwner {
         require(supportedTokens[token], "Token not supported");
         supportedTokens[token] = false;
         emit EscrowTypes.TokenSupportedRemoved(token);
+    }
+
+    /// @notice Pause the contract (emergency)
+    /// @dev ACCESS: Only owner can call
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause the contract
+    /// @dev ACCESS: Only owner can call
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     /// @notice Check if an address is authorized as admin
     /// @dev Used by frontend to check admin status
     /// @param caller Address to check
     /// @return bool True if authorized, false otherwise
-    function isAuthorized(address caller) external view returns (bool) {
+    function isAuthorized(address caller) external view virtual override returns (bool) {
         return _isAuthorized(caller);
     }
 }

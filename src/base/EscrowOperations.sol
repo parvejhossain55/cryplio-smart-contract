@@ -4,8 +4,12 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import "./EscrowAuth.sol";
 import "../lib/EscrowTypes.sol";
+import "../interface/ICrpylioEscrow.sol";
 
 /**
  * @title EscrowOperations
@@ -13,11 +17,56 @@ import "../lib/EscrowTypes.sol";
  * @notice All state-changing functions are protected by ReentrancyGuard
  * @custom:security Protected against reentrancy attacks via OpenZeppelin ReentrancyGuard
  */
-abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
+abstract contract EscrowOperations is ICryplioEscrow, EscrowAuth, ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
+    using MessageHashUtils for bytes32;
     
+    // Nonce tracking for meta-transactions (seller => nonce => used)
+    mapping(address => mapping(uint256 => bool)) public usedNonces;
+
+    // Type hashes for EIP-712
+    bytes32 private constant CREATE_ESCROW_TYPEHASH = keccak256(
+        "CreateEscrow(bytes32 tradeId,address buyer,address seller,address token,uint256 amount,uint256 expiryTime,uint256 nonce)"
+    );
+
     // Constructor
-    constructor(address[] memory _initialTokens) EscrowAuth(_initialTokens) {}
+    constructor(address[] memory _initialTokens) 
+        EscrowAuth(_initialTokens) 
+        EIP712("CryplioEscrow", "1") 
+    {}
+    
+    /**
+     * @dev Internal function to validate escrow creation inputs
+     * @param tradeId Trade identifier
+     * @param buyer Buyer address
+     * @param seller Seller address  
+     * @param token Token address
+     * @param amount Amount to escrow
+     * @param expiryTime Expiry time
+     */
+    function _validateEscrowInputs(
+        bytes32 tradeId,
+        address buyer,
+        address seller,
+        address token,
+        uint256 amount,
+        uint256 expiryTime
+    ) internal view {
+        EscrowTypes.validateTradeId(tradeId);
+        EscrowTypes.validateAddresses(buyer, seller);
+        EscrowTypes.validateAmount(amount);
+        EscrowTypes.validateExpiryTime(expiryTime);
+        EscrowTypes.validateTokenSupported(supportedTokens[token]);
+        EscrowTypes.validateEscrowExists(_escrowExists(tradeId));
+    }
+    
+    /**
+     * @notice Emitted when meta-transaction is executed
+     * @param seller The signer who authorized the transaction
+     * @param nonce The nonce used for this transaction
+     * @param relayer The address that paid the gas (platform wallet)
+     */
+    event MetaTransactionExecuted(address indexed seller, uint256 indexed nonce, address indexed relayer);
     
     /**
      * @notice Create a new escrow for a P2P trade
@@ -42,22 +91,9 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
         address token,
         uint256 amount,
         uint256 expiryTime
-    ) external nonReentrant returns (bool) {
+    ) external virtual override nonReentrant whenNotPaused returns (bool) {
         // Validate inputs
-        EscrowTypes.validateTradeId(tradeId);
-        EscrowTypes.validateAddresses(buyer, seller);
-        EscrowTypes.validateAmount(amount);
-        EscrowTypes.validateExpiryTime(expiryTime);
-        
-        // Validate token support
-        if (!supportedTokens[token]) {
-            revert EscrowTypes.UnsupportedToken();
-        }
-        
-        // Check if escrow already exists
-        if (_escrowExists(tradeId)) {
-            revert EscrowTypes.EscrowAlreadyExists();
-        }
+        _validateEscrowInputs(tradeId, buyer, seller, token, amount, expiryTime);
         
         // Only seller can create their own escrow
         if (msg.sender != seller) {
@@ -76,6 +112,151 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
     }
 
     /**
+     * @notice Create escrow via meta-transaction (platform wallet pays gas)
+     * @dev META-TX: Seller signs message off-chain, platform wallet submits on-chain
+     *      SECURITY: Signature verification ensures only seller can authorize their escrow
+     *      REENTRANCY: Protected by nonReentrant modifier
+     * @param tradeId Unique identifier for the trade
+     * @param buyer Address receiving tokens
+     * @param seller Address providing tokens (must be the signer)
+     * @param token ERC20 token address
+     * @param amount Token amount to lock
+     * @param expiryTime Custom expiry time
+     * @param nonce Unique nonce to prevent replay attacks
+     * @param signature EIP-712 signature from seller
+     * @return bool Always returns true on success
+     * @custom:throws EscrowTypes.InvalidSignature if signature is invalid
+     * @custom:throws EscrowTypes.NonceAlreadyUsed if nonce was already consumed
+     */
+    function createEscrowMeta(
+        bytes32 tradeId,
+        address buyer,
+        address seller,
+        address token,
+        uint256 amount,
+        uint256 expiryTime,
+        uint256 nonce,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused returns (bool) {
+        // Validate inputs
+        _validateEscrowInputs(tradeId, buyer, seller, token, amount, expiryTime);
+        
+        // Check nonce not used
+        if (usedNonces[seller][nonce]) {
+            revert EscrowTypes.NonceAlreadyUsed();
+        }
+        
+        // Build message hash (EIP-712)
+        bytes32 structHash = keccak256(abi.encode(
+            CREATE_ESCROW_TYPEHASH,
+            tradeId,
+            buyer,
+            seller,
+            token,
+            amount,
+            expiryTime,
+            nonce
+        ));
+        
+        bytes32 hash = _hashTypedDataV4(structHash);
+        
+        // Recover signer from signature
+        address signer = ECDSA.recover(hash, signature);
+        
+        // Verify signer is the seller
+        if (signer != seller) {
+            revert EscrowTypes.InvalidSignature();
+        }
+        
+        // Mark nonce as used
+        usedNonces[seller][nonce] = true;
+        
+        // Transfer tokens from seller to this contract
+        IERC20 tokenContract = IERC20(token);
+        tokenContract.safeTransferFrom(seller, address(this), amount);
+        
+        // Create escrow record
+        _createEscrow(tradeId, buyer, seller, token, amount, expiryTime);
+        
+        emit EscrowTypes.EscrowCreated(tradeId, buyer, seller, token, amount, block.timestamp);
+        emit MetaTransactionExecuted(seller, nonce, msg.sender);
+        
+        return true;
+    }
+
+    /**
+     * @dev Internal function to transfer tokens with platform fee deduction
+     * @param token Token address
+     * @param tradeId Trade identifier for event
+     * @param recipient Final recipient of tokens (after fee)
+     * @param totalAmount Total amount from escrow
+     * @param feeBps Fee in basis points (75 = 0.75%, 25 = 0.25%)
+     * @return netAmount Amount actually sent to recipient
+     */
+    function _transferWithFee(
+        address token,
+        bytes32 tradeId,
+        address recipient,
+        uint256 totalAmount,
+        uint256 feeBps
+    ) internal returns (uint256 netAmount) {
+        uint256 feeAmount;
+        unchecked {
+            feeAmount = (totalAmount * feeBps) / 10000;
+            netAmount = totalAmount - feeAmount;
+        }
+        
+        // Transfer fee to feeRecipient
+        if (feeAmount > 0 && feeRecipient != address(0)) {
+            IERC20(token).safeTransfer(feeRecipient, feeAmount);
+            emit EscrowTypes.FeeCollected(tradeId, token, feeRecipient, feeAmount, block.timestamp);
+        }
+        
+        // Transfer remaining to recipient
+        IERC20(token).safeTransfer(recipient, netAmount);
+        
+        return netAmount;
+    }
+
+    /**
+     * @dev Internal function to finalize an escrow (transfer funds and update status)
+     * @param escrow Storage reference to the escrow
+     * @param tradeId Trade identifier for events
+     * @param recipient Final recipient of tokens
+     * @param feeBps Fee in basis points
+     * @param newStatus New status to set
+     * @return netAmount Amount actually sent to recipient
+     */
+    function _finalizeEscrow(
+        EscrowTypes.Escrow storage escrow,
+        bytes32 tradeId,
+        address recipient,
+        uint256 feeBps,
+        EscrowTypes.EscrowStatus newStatus
+    ) internal returns (uint256 netAmount) {
+        // Ensure escrow is still in Locked status
+        if (escrow.status != EscrowTypes.EscrowStatus.Locked) {
+            revert EscrowTypes.InvalidStatus();
+        }
+
+        // Cache storage values to memory to save gas
+        address token = escrow.token;
+        uint256 amount = escrow.amount;
+        
+        // Transfer with fee to recipient
+        netAmount = _transferWithFee(
+            token,
+            tradeId,
+            recipient,
+            amount,
+            feeBps
+        );
+        
+        // Update status
+        escrow.status = newStatus;
+    }
+
+    /**
      * @notice Release escrow funds to buyer after seller confirms fiat payment
      * @dev FINANCIAL: Deducts 0.75% platform fee before transfer
      *      MATH: feeAmount = (amount * FEE_BPS) / 10000, buyerAmount = amount - feeAmount
@@ -88,6 +269,8 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
      */
     function releaseEscrow(bytes32 tradeId) 
         external 
+        virtual 
+        override 
         validEscrow(tradeId) 
         onlySeller(tradeId)
         nonReentrant 
@@ -95,27 +278,14 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
     {
         EscrowTypes.Escrow storage escrow = _getEscrow(tradeId);
         
-        // Allow release if Locked 
-        if (escrow.status != EscrowTypes.EscrowStatus.Locked) {
-            revert EscrowTypes.InvalidStatus();
-        }
-        
-        // MATH: Fee calculation - (amount * 75) / 10000 = 0.75%
-        // Example: 100 USDT * 75 / 10000 = 0.75 USDT fee
-        uint256 feeAmount = (escrow.amount * FEE_BPS) / 10000;
-        uint256 buyerAmount = escrow.amount - feeAmount;
-        
-        // Transfer fee to feeRecipient
-        if (feeAmount > 0 && feeRecipient != address(0)) {
-            IERC20(escrow.token).safeTransfer(feeRecipient, feeAmount);
-            emit EscrowTypes.FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
-        }
-        
-        // Transfer remaining to buyer
-        IERC20(escrow.token).safeTransfer(escrow.buyer, buyerAmount);
-        
-        // Update status
-        _updateEscrowStatus(tradeId, EscrowTypes.EscrowStatus.Released);
+        // Finalize escrow and transfer to buyer
+        uint256 buyerAmount = _finalizeEscrow(
+            escrow,
+            tradeId,
+            escrow.buyer,
+            FEE_BPS,
+            EscrowTypes.EscrowStatus.Released
+        );
         
         emit EscrowTypes.EscrowReleased(tradeId, escrow.buyer, buyerAmount, block.timestamp);
         return true;
@@ -136,6 +306,8 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
      */
     function refundEscrow(bytes32 tradeId)
         external
+        virtual
+        override
         onlyAuthorized
         validEscrow(tradeId)
         canRefund(tradeId)
@@ -144,27 +316,14 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
     {
         EscrowTypes.Escrow storage escrow = _getEscrow(tradeId);
         
-        // Ensure escrow is still in Locked status
-        if (escrow.status != EscrowTypes.EscrowStatus.Locked) {
-            revert EscrowTypes.InvalidStatus();
-        }
-        
-        // MATH: Fee calculation - (amount * 25) / 10000 = 0.25%
-        // Example: 100 USDT * 25 / 10000 = 0.25 USDT fee
-        uint256 feeAmount = (escrow.amount * REFUND_FEE_BPS) / 10000;
-        uint256 sellerAmount = escrow.amount - feeAmount;
-        
-        // Transfer fee to feeRecipient
-        if (feeAmount > 0 && feeRecipient != address(0)) {
-            IERC20(escrow.token).safeTransfer(feeRecipient, feeAmount);
-            emit EscrowTypes.FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
-        }
-        
-        // Transfer remaining to seller
-        IERC20(escrow.token).safeTransfer(escrow.seller, sellerAmount);
-        
-        // Update status
-        _updateEscrowStatus(tradeId, EscrowTypes.EscrowStatus.Refunded);
+        // Finalize escrow and refund to seller
+        uint256 sellerAmount = _finalizeEscrow(
+            escrow,
+            tradeId,
+            escrow.seller,
+            REFUND_FEE_BPS,
+            EscrowTypes.EscrowStatus.Refunded
+        );
         
         emit EscrowTypes.EscrowRefunded(tradeId, escrow.seller, sellerAmount, block.timestamp);
         return true;
@@ -184,6 +343,8 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
      */
     function forceReleaseEscrow(bytes32 tradeId)
         external
+        virtual
+        override
         onlyAuthorized
         validEscrow(tradeId)
         nonReentrant
@@ -191,27 +352,14 @@ abstract contract EscrowOperations is EscrowAuth, ReentrancyGuard {
     {
         EscrowTypes.Escrow storage escrow = _getEscrow(tradeId);
 
-        // Allow force release only if Locked
-        if (escrow.status != EscrowTypes.EscrowStatus.Locked) {
-            revert EscrowTypes.InvalidStatus();
-        }
-
-        // MATH: Fee calculation - (amount * 75) / 10000 = 0.75%
-        // Example: 100 USDT * 75 / 10000 = 0.75 USDT fee
-        uint256 feeAmount = (escrow.amount * FEE_BPS) / 10000;
-        uint256 buyerAmount = escrow.amount - feeAmount;
-
-        // Transfer fee to feeRecipient
-        if (feeAmount > 0 && feeRecipient != address(0)) {
-            IERC20(escrow.token).safeTransfer(feeRecipient, feeAmount);
-            emit EscrowTypes.FeeCollected(tradeId, escrow.token, feeRecipient, feeAmount, block.timestamp);
-        }
-
-        // Transfer remaining to buyer
-        IERC20(escrow.token).safeTransfer(escrow.buyer, buyerAmount);
-
-        // Update status
-        _updateEscrowStatus(tradeId, EscrowTypes.EscrowStatus.Released);
+        // Finalize escrow and force release to buyer
+        uint256 buyerAmount = _finalizeEscrow(
+            escrow,
+            tradeId,
+            escrow.buyer,
+            FEE_BPS,
+            EscrowTypes.EscrowStatus.Released
+        );
 
         emit EscrowTypes.EscrowForceReleased(tradeId, escrow.buyer, buyerAmount, msg.sender, block.timestamp);
         return true;
